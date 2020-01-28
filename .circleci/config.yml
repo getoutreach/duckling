@@ -1,0 +1,69 @@
+version: 2 # use CircleCI 2.0
+jobs: # basic units of work in a run
+  build_docker_image:
+    docker: # run the steps with Docker
+      # CircleCI Go images available at: https://hub.docker.com/r/circleci/golang/
+      - image: circleci/golang:1.13
+
+    # directory where steps are run. Path must conform to the Go Workspace requirements
+    working_directory: /go/src/github.com/getoutreach/duckling
+
+    environment: # environment variables for the build itself
+      CIRCLE_BUILD_DIR: /go/src/github.com/getoutreach/duckling
+
+    steps:
+      # adds the ssh key that Wheatley put here for us.  Ask Wheatley on slack to "setup circle for <project_name>"
+      # see https://outreach-io.atlassian.net/wiki/spaces/EN/pages/701596137/Services+Checklist for the setup process
+      - add_ssh_keys
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+          version: 18.09.3
+      - run:
+          name: Push Docker Image
+          command: |
+            # log into private registry
+            set -e
+            echo ${GCLOUD_SERVICE_ACCOUNT} | docker login \
+              -u _json_key \
+              --password-stdin \
+              https://gcr.io
+            VERSION=$("$CIRCLE_BUILD_DIR/.circleci/get-version.sh")
+            IMAGE_NAME="duckling"
+
+            # Setup SSH access
+            eval $(ssh-agent)
+            grep -slR "PRIVATE" ~/.ssh/ | xargs ssh-add
+
+            DOCKER_BUILDKIT=1 docker build --ssh default \
+              -t "${IMAGE_NAME}" \
+              --file Dockerfile \
+              --build-arg VERSION=${VERSION} \
+              .
+            private_registry_base_name="gcr.io/outreach-docker/${IMAGE_NAME}"
+            versioned_image_name="${private_registry_base_name}:${VERSION}"
+            sha1_image_name="${private_registry_base_name}:${CIRCLE_SHA1}"
+
+            set -x
+            docker tag "${IMAGE_NAME}" "${versioned_image_name}"
+            docker tag "${IMAGE_NAME}" "${private_registry_base_name}"
+            docker tag "${IMAGE_NAME}" "${sha1_image_name}"
+            docker push "${private_registry_base_name}"
+            docker push "${versioned_image_name}"
+            docker push "${sha1_image_name}"
+
+            # curl -X POST "https://maestro.outreach.cloud/revision/duckling/deployable" -H "X-Auth-Token: ${OUTREACH_MAESTRO_SECRET}" -d "{\"tag\": \"${CIRCLE_SHA1}\"}"
+
+workflows:
+  version: 2
+  build_and_test:
+    jobs:
+      - build:
+          context: docker-registry
+      - build_docker_image:
+          context: docker-registry
+          requires:
+            - build
+          filters:
+            branches:
+              only: master
