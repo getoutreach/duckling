@@ -58,12 +58,8 @@ workflows:
   version: 2
   build_and_test:
     jobs:
-      - build:
-          context: docker-registry
       - build_docker_image:
           context: docker-registry
-          requires:
-            - build
           filters:
             branches:
               only: master
